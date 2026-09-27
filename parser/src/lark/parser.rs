@@ -580,6 +580,11 @@ impl Parser {
                 LexemeValue::Json(v) => Ok(Value::Json(v)),
                 v => bail!("expected JSON value, got {}", v),
             }
+        } else if self.has_token(Token::KwIntRanges) {
+            match self.take_token_value() {
+                LexemeValue::Json(v) => Ok(Value::IntRanges(v)),
+                v => bail!("expected %int_ranges JSON value, got {}", v),
+            }
         } else if self.has_token(Token::KwRegex) {
             match self.take_token_value() {
                 LexemeValue::Regex(v) => Ok(Value::RegexExt(v)),

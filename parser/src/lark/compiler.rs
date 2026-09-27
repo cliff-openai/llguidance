@@ -189,6 +189,9 @@ impl Compiler {
                 Value::SpecialToken(s) => {
                     bail!("special tokens (like {:?}) cannot be used in terminals", s);
                 }
+                Value::IntRanges(_) => {
+                    bail!("%int_ranges cannot be used in terminals");
+                }
                 Value::Json(_) => {
                     bail!("%json literals cannot be used in terminals");
                 }
@@ -367,6 +370,11 @@ impl Compiler {
                             };
                         }
                         return self.builder.special_token(s);
+                    }
+                    Value::IntRanges(config) => {
+                        let config = serde_json::from_value(config.clone())
+                            .map_err(|e| anyhow!("invalid %int_ranges options: {e}"))?;
+                        return self.builder.int_ranges(config);
                     }
                     Value::GrammarRef(g) => {
                         return self.gen_grammar(g, None, NodeProps::default());

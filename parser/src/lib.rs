@@ -64,6 +64,7 @@ pub mod ffi;
 mod ffi_par;
 
 mod grammar_builder;
+pub mod int_ranges;
 mod json;
 #[cfg(feature = "jsonschema_validation")]
 mod json_validation;

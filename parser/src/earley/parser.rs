@@ -17,7 +17,7 @@ use crate::{
     HashMap, HashSet, Instant,
 };
 use anyhow::{bail, ensure, Result};
-use derivre::{NextByte, RegexAst, StateID};
+use derivre::{NextByte, StateID};
 use serde::{Deserialize, Serialize};
 use toktrie::{
     parse_numeric_token, Recognizer, SimpleVob, TokEnv, TokTrie, TokenId, INVALID_TOKEN,
@@ -2402,7 +2402,7 @@ impl ParserState {
         let mut matched_something = false;
         for lexeme_idx in allowed_lexemes.iter() {
             let lex_spec = &self.lexer_spec().lexemes[lexeme_idx.as_usize()];
-            if lex_spec.is_skip && matches!(lex_spec.rx, RegexAst::NoMatch) {
+            if lex_spec.is_disabled_skip() {
                 continue;
             }
 

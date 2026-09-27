@@ -6,11 +6,12 @@ use toktrie::{bytes::limit_bytes, SimpleVob, TokTrie, TokenId};
 use crate::{
     api::{ParserLimits, SkipRepetition, SkipSpec},
     id32_type,
+    int_ranges::IntRangesConfig,
 };
 
 use super::{
     lexer::MatchingLexemesIdx,
-    regexvec::{LexemeSet, MatchingLexemes, RegexVec, RxLexeme},
+    regexvec::{LexemeMatcherSpec, LexemeSet, MatchingLexemes, RegexVec, RxLexeme},
 };
 
 #[derive(Clone)]
@@ -46,13 +47,34 @@ impl LexemeClass {
 }
 
 #[derive(Clone)]
+enum LexemeBody {
+    Regex { ast: RegexAst, compiled: ExprRef },
+    IntRanges(Box<IntRangesConfig>),
+}
+
+impl LexemeBody {
+    fn regex(ast: RegexAst) -> Self {
+        Self::Regex {
+            ast,
+            compiled: ExprRef::INVALID,
+        }
+    }
+
+    fn matcher(&self) -> LexemeMatcherSpec {
+        match self {
+            Self::Regex { compiled, .. } => LexemeMatcherSpec::Regex(*compiled),
+            Self::IntRanges(config) => LexemeMatcherSpec::IntRanges(config.clone()),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct LexemeSpec {
     pub(crate) idx: LexemeIdx,
     pub(crate) single_set: MatchingLexemes,
     pub(crate) name: String,
-    pub(crate) rx: RegexAst,
+    body: LexemeBody,
     class: LexemeClass,
-    pub(crate) compiled_rx: ExprRef,
     ends_at_eos: bool,
     lazy: bool,
     contextual: bool,
@@ -100,7 +122,12 @@ impl LexemeSpec {
         use std::fmt::Write;
         let mut f = String::new();
         write!(f, "[{}] {} ", self.idx.0, self.name).unwrap();
-        self.rx.write_to_str(&mut f, max_len, exprset);
+        match &self.body {
+            LexemeBody::Regex { ast, .. } => ast.write_to_str(&mut f, max_len, exprset),
+            LexemeBody::IntRanges(config) => {
+                write!(f, "%int_ranges {}", serde_json::to_string(config).unwrap()).unwrap();
+            }
+        }
         if self.lazy {
             f.push_str(" lazy");
         }
@@ -116,12 +143,22 @@ impl LexemeSpec {
         if !self.token_ranges.is_empty() {
             write!(f, " tokens={}", token_ranges_to_string(&self.token_ranges)).unwrap();
         }
-        // write!(f, " compiled={:?}", self.compiled_rx).unwrap();
         f
     }
 
     pub fn contains_token(&self, token: TokenId) -> bool {
         self.token_ranges.iter().any(|range| range.contains(&token))
+    }
+
+    pub(crate) fn is_disabled_skip(&self) -> bool {
+        self.is_skip
+            && matches!(
+                self.body,
+                LexemeBody::Regex {
+                    ast: RegexAst::NoMatch,
+                    ..
+                }
+            )
     }
 }
 
@@ -183,9 +220,13 @@ impl LexerSpec {
 
     /// Check if the lexeme always matches bytes.
     pub fn has_forced_bytes(&self, lex_spec: &LexemeSpec, bytes: &[u8]) -> bool {
-        self.regex_builder
-            .exprset()
-            .has_simply_forced_bytes(lex_spec.compiled_rx, bytes)
+        match &lex_spec.body {
+            LexemeBody::Regex { compiled, .. } => self
+                .regex_builder
+                .exprset()
+                .has_simply_forced_bytes(*compiled, bytes),
+            LexemeBody::IntRanges(_) => false,
+        }
     }
 
     pub fn setup_lexeme_class(&mut self, skip: RegexAst) -> Result<LexemeClass> {
@@ -214,7 +255,7 @@ impl LexerSpec {
         let idx = self
             .add_lexeme_spec(LexemeSpec {
                 name: format!("SKIP{}", self.current_class.as_usize()),
-                rx: skip,
+                body: LexemeBody::regex(skip),
                 is_skip: true,
                 skip_repetition,
                 ..self.empty_spec()
@@ -267,8 +308,10 @@ impl LexerSpec {
     }
 
     pub fn is_nullable(&self, idx: LexemeIdx) -> bool {
-        self.regex_builder
-            .is_nullable(self.lexemes[idx.as_usize()].compiled_rx)
+        match &self.lexemes[idx.as_usize()].body {
+            LexemeBody::Regex { compiled, .. } => self.regex_builder.is_nullable(*compiled),
+            LexemeBody::IntRanges(_) => true,
+        }
     }
 
     pub fn to_regex_vec(&self, limits: &mut ParserLimits) -> Result<RegexVec> {
@@ -282,7 +325,7 @@ impl LexerSpec {
             .lexemes
             .iter()
             .map(|lex| RxLexeme {
-                rx: lex.compiled_rx,
+                matcher: lex.body.matcher(),
                 priority: 0,
                 lazy: lex.lazy,
             })
@@ -296,31 +339,37 @@ impl LexerSpec {
     }
 
     fn add_lexeme_spec(&mut self, mut spec: LexemeSpec) -> Result<LexemeIdx> {
-        let compiled = if !spec.token_ranges.is_empty() {
-            if let Some(rx) = self.special_token_rx {
-                rx
+        if let LexemeBody::Regex { ast, compiled } = &mut spec.body {
+            *compiled = if !spec.token_ranges.is_empty() {
+                if let Some(rx) = self.special_token_rx {
+                    rx
+                } else {
+                    let rx_ast = RegexAst::Concat(vec![
+                        RegexAst::Byte(TokTrie::SPECIAL_TOKEN_MARKER),
+                        RegexAst::Regex(r"\[[0-9]+\]".to_string()),
+                    ]);
+                    let rx = self.regex_builder.mk(&rx_ast)?;
+                    self.special_token_rx = Some(rx);
+                    rx
+                }
             } else {
-                let rx_ast = RegexAst::Concat(vec![
-                    RegexAst::Byte(TokTrie::SPECIAL_TOKEN_MARKER),
-                    RegexAst::Regex(r"\[[0-9]+\]".to_string()),
-                ]);
-                let compiled = self.regex_builder.mk(&rx_ast)?;
-                self.special_token_rx = Some(compiled);
-                compiled
-            }
-        } else {
-            self.regex_builder.mk(&spec.rx)?
-        };
-
-        if !self.has_stop && !spec.is_suffix {
-            self.has_stop = match &spec.rx {
-                RegexAst::Concat(parts) => parts
-                    .iter()
-                    .any(|part| matches!(part, RegexAst::LookAhead(_))),
-                _ => false,
+                self.regex_builder.mk(ast)?
             };
-            if spec.ends_at_eos {
-                self.has_stop = true;
+
+            if !self.has_stop && !spec.is_suffix {
+                self.has_stop = match ast {
+                    RegexAst::Concat(parts) => parts
+                        .iter()
+                        .any(|part| matches!(part, RegexAst::LookAhead(_))),
+                    _ => false,
+                };
+                if spec.ends_at_eos {
+                    self.has_stop = true;
+                }
+            }
+
+            if let Some(ref opts) = spec.json_options {
+                *compiled = self.regex_builder.json_quote(*compiled, opts)?;
             }
         }
 
@@ -328,14 +377,15 @@ impl LexerSpec {
             self.has_max_tokens = true;
         }
 
-        let compiled = if let Some(ref opts) = spec.json_options {
-            self.regex_builder.json_quote(compiled, opts)?
-        } else {
-            compiled
-        };
-
         if let Some(idx) = self.lexemes.iter().position(|lex| {
-            lex.compiled_rx == compiled
+            let same_matcher = match (&lex.body, &spec.body) {
+                (LexemeBody::Regex { compiled: a, .. }, LexemeBody::Regex { compiled: b, .. }) => {
+                    a == b
+                }
+                (LexemeBody::IntRanges(a), LexemeBody::IntRanges(b)) => a == b,
+                _ => false,
+            };
+            same_matcher
                 && lex.class == spec.class
                 && lex.max_tokens == spec.max_tokens
                 && lex.token_ranges == spec.token_ranges
@@ -348,7 +398,6 @@ impl LexerSpec {
         let idx = LexemeIdx::new(self.lexemes.len());
         spec.idx = idx;
         spec.single_set = MatchingLexemes::One(idx);
-        spec.compiled_rx = compiled;
         if spec.name.is_empty() {
             spec.name = format!("[{}]", idx.as_usize());
         }
@@ -365,8 +414,7 @@ impl LexerSpec {
             idx: LexemeIdx(0),
             single_set: MatchingLexemes::One(LexemeIdx(0)),
             name: "".to_string(),
-            rx: RegexAst::NoMatch,
-            compiled_rx: ExprRef::INVALID,
+            body: LexemeBody::regex(RegexAst::NoMatch),
             lazy: false,
             contextual: false,
             ends_at_eos: false,
@@ -397,7 +445,7 @@ impl LexerSpec {
         };
         self.add_lexeme_spec(LexemeSpec {
             name,
-            rx,
+            body: LexemeBody::regex(rx),
             lazy,
             ends_at_eos: !lazy,
             max_tokens,
@@ -414,8 +462,17 @@ impl LexerSpec {
     ) -> Result<LexemeIdx> {
         self.add_lexeme_spec(LexemeSpec {
             name,
-            rx: RegexAst::Literal(literal.to_string()),
+            body: LexemeBody::regex(RegexAst::Literal(literal.to_string())),
             contextual,
+            ..self.empty_spec()
+        })
+    }
+
+    pub fn add_int_ranges(&mut self, config: IntRangesConfig) -> Result<LexemeIdx> {
+        config.validate()?;
+        self.add_lexeme_spec(LexemeSpec {
+            name: "%int_ranges".to_string(),
+            body: LexemeBody::IntRanges(Box::new(config)),
             ..self.empty_spec()
         })
     }
@@ -442,7 +499,7 @@ impl LexerSpec {
     ) -> Result<LexemeIdx> {
         self.add_lexeme_spec(LexemeSpec {
             name,
-            rx,
+            body: LexemeBody::regex(rx),
             contextual,
             json_options,
             max_tokens,
@@ -457,7 +514,7 @@ impl LexerSpec {
         for (idx, added) in extra_lexemes.iter().enumerate() {
             self.add_lexeme_spec(LexemeSpec {
                 name: format!("$extra_{idx}"),
-                rx: RegexAst::Regex(added.clone()),
+                body: LexemeBody::regex(RegexAst::Regex(added.clone())),
                 is_extra: true,
                 ..self.empty_spec()
             })

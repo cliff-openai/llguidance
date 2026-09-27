@@ -30,6 +30,7 @@ pub enum Token {
     KwOverride,
     KwDeclare,
     KwJson,
+    KwIntRanges,
     KwRegex,
     KwLLGuidance,
     KwIf,
@@ -196,6 +197,7 @@ impl Token {
         (Token::KwImport, "%import"),
         (Token::KwOverride, "%override"),
         (Token::KwJson, "%json"),
+        (Token::KwIntRanges, "%int_ranges"),
         (Token::KwRegex, "%regex"),
         (Token::KwLark, "%lark"),
         (Token::KwIf, "%if"),
@@ -325,6 +327,7 @@ pub fn lex_lark(input: &str) -> Result<Vec<Lexeme>> {
                 curr_lexeme.value = if token == Token::KwJson
                     || token == Token::KwLLGuidance
                     || token == Token::KwRegex
+                    || token == Token::KwIntRanges
                 {
                     let inp_slice = &input_bytes[end_idx..];
                     let (lexeme_value, n_bytes) = if token == Token::KwRegex {

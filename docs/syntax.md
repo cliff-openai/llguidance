@@ -59,6 +59,61 @@ If the string starts with `{`, it will be forced to follow the given JSON schema
 If you have more functions, you can use either `%json { "anyOf": [ ... ] }`,
 or `fun_call1 | fun_call2` where each `fun_callX` is defined as `%json { ... }`.
 
+### Ordered integer ranges
+
+`%int_ranges { ... }` constrains an ascending list of integers and non-overlapping
+inclusive integer ranges. For example, this grammar selects lines from a document:
+
+```lark
+start: "{\"keep\":\"" selection "\"}"
+selection: %int_ranges {"min":1,"max":999}
+```
+
+It accepts `{"keep":"1-3,4-5,6,7-8"}` and `{"keep":""}`. A singleton can be
+written as `6` or `6-6`. All endpoints must be in the configured bounds, the end
+must be at least the start, and each subsequent entry must start strictly after
+the previous entry ends. Adjacent entries are permitted by default; repeated,
+overlapping, and backwards entries are not. Each use of the primitive starts a
+new independent list.
+
+The JSON configuration supports the following fields; unknown fields are errors:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `min` | `0` | Smallest endpoint, inclusive. |
+| `max` | Required | Largest endpoint, inclusive. |
+| `width` | `0` | `0` uses ordinary decimal numbers with no leading zeros. `1`–`20` requires exactly this many digits, padding with zeros. The width must fit `max`. |
+| `separator` | `","` | Literal nonempty UTF-8 string between entries. It cannot start with an ASCII digit or `-`. No whitespace is inserted automatically. |
+
+Endpoints are unsigned 64-bit integers. `min` must be at most `max`.
+The empty list is always permitted.
+
+For fixed-width output with spaces after commas:
+
+```lark
+start: %int_ranges {"min":1,"max":999,"width":3,"separator":", "}
+```
+
+This accepts `001-032, 033, 034-311`. It does not accept `1-32, 33-311`,
+`001-032, 33`, or `001-032,033-311`.
+
+The constraint checks whether each decimal prefix can still lead to a valid
+number. After a previous endpoint of `32`, a next-start prefix of `31` remains
+allowed because it can become `311`; ending the list, a separator, or `-` at
+that prefix is blocked. `33`, `33-`, and `320-` are allowed when within the
+configured bounds. This works across token boundaries, including tokens
+containing several digits or whole ranges. It does not roll back and resample a completed number.
+
+States are cached lazily, including prefixes explored while computing token
+masks. Large endpoint domains can produce many states. As a rough sizing
+example on a 64-bit build with indexmap 2.10, a native cache with about 250,000
+entries allocates about 25.5 MiB, including collection capacity. This excludes
+the surrounding lexer's caches and is not a worst-case byte limit. Tokenizer,
+grammar complexity, and additional primitives affect total memory use.
+`ParserLimits::max_lexer_states` (default 250,000) limits combined lexer states;
+reaching it stops parsing with a lexer-complexity error rather than evicting
+cached states.
+
 ### Special tokens
 
 Special tokens can referenced via `<token_name>` syntax (i.e., any string between `<` and `>`),

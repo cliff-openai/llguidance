@@ -290,6 +290,13 @@ impl GrammarBuilder {
         r
     }
 
+    /// Create a lexeme selecting ordered, nonoverlapping integer ranges.
+    pub fn int_ranges(&mut self, config: crate::int_ranges::IntRangesConfig) -> Result<NodeRef> {
+        self.check_limits()?;
+        let idx = self.regex.spec.add_int_ranges(config)?;
+        Ok(self.lexeme_to_node(idx))
+    }
+
     pub fn token_ranges(&mut self, token_ranges: Vec<RangeInclusive<u32>>) -> Result<NodeRef> {
         self.check_limits()?;
 

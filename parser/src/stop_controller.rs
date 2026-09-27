@@ -8,7 +8,7 @@ use crate::{
     api::ParserLimits,
     earley::{
         lexerspec::LexemeIdx,
-        regexvec::{LexemeSet, RegexVec, RxLexeme},
+        regexvec::{LexemeMatcherSpec, LexemeSet, RegexVec, RxLexeme},
     },
 };
 
@@ -68,7 +68,7 @@ impl StopController {
             let mut dfa = RegexVec::new_with_exprset(
                 builder.into_exprset(),
                 vec![RxLexeme {
-                    rx,
+                    matcher: LexemeMatcherSpec::Regex(rx),
                     lazy: true,
                     priority: 0,
                 }],
